@@ -2,6 +2,8 @@ package dev.ikm.maven.toolkit.isolated.controller;
 
 import dev.ikm.maven.toolkit.TinkarMojo;
 import dev.ikm.maven.toolkit.isolated.entity.LogInstant;
+import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.MojoFailureException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,6 +37,7 @@ public class IsolationDispatcher {
 	private String canonicalName;
 	private Path isolatedDirectory;
 	private final Semaphore semaphore = new Semaphore(2);
+	public static final int VERIFY_EXIT_CODE = 1;
 
 	private IsolationDispatcher(Builder builder) {
 		this.tinkarMojo = builder.tinkarMojo;
@@ -47,16 +50,19 @@ public class IsolationDispatcher {
 	/**
 	 * Dispatch new instance of JVM and run Mojo
 	 */
-	public void dispatch() {
+	public void dispatch() throws MojoExecutionException, MojoFailureException  {
 		isolationFieldSerializer.discoverIsolatedFields(tinkarMojo);
 		isolationFieldSerializer.serializeFields();
 
+		long maxMemory = Runtime.getRuntime().maxMemory();
+		long maxInMB = maxMemory / 1024 / 1024;
 		ProcessBuilder pb = new ProcessBuilder();
 		List<String> command = new ArrayList<>();
 		command.add(System.getProperty("java.home") + "/bin/java");
 		command.add("-Dfile.encoding=UTF-8");
 		command.add("-Dsun.stdout.encoding=UTF-8");
 		command.add("-Dsun.stderr.encoding=UTF-8");
+		command.add("-Xmx"+maxInMB+"m");
 		command.add("-cp");
 		command.add(classPath);
 		command.add(canonicalName);
@@ -74,7 +80,9 @@ public class IsolationDispatcher {
 			logInstants.sort(Comparator.comparing(LogInstant::instant));
 			logInstants.forEach(logInstant -> LOG.info(logInstant.message()));
 			LOG.info("Process exited with code: " + exitCode);
-
+			if (exitCode == VERIFY_EXIT_CODE) {
+				throw new MojoExecutionException("Mojo Failed to Execute");
+			}
 		} catch (IOException | InterruptedException e) {
 			e.printStackTrace();
 		}
@@ -169,12 +177,12 @@ public class IsolationDispatcher {
 			//Build Class Path string based on dependencies
 			StringBuilder cpBuilder = new StringBuilder();
 			String targetDirectory = buildDirectory.resolve("classes").toString();
-			cpBuilder.append(targetDirectory).append(":");
+			cpBuilder.append(targetDirectory).append(File.pathSeparator);
 			for (int i = 0; i < dependencies.size(); i++) {
 				File dependency = dependencies.get(i);
 				String artifactPath = dependency.getAbsolutePath();
 				if (i < dependencies.size() - 1) {
-					cpBuilder.append(artifactPath).append(":");
+					cpBuilder.append(artifactPath).append(File.pathSeparator);
 				} else {
 					cpBuilder.append(artifactPath);
 				}
@@ -186,7 +194,7 @@ public class IsolationDispatcher {
 
 			//Create a directory for isolated fields
 			LocalTime localTime = LocalTime.now();
-			DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss");
+			DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("HHmmss");
 			isolatedDirectory = Path.of(buildDirectory.toString(), tinkarMojo.getClass().getSimpleName() + "-" + dateTimeFormatter.format(localTime));
 			try {
 				Files.createDirectories(isolatedDirectory);
